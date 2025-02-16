@@ -16,6 +16,9 @@ from models.config import LMConfig
 
 
 class RMSNorm(torch.nn.Module):
+    """
+    计算更高效、更稳定
+    """
     def __init__(self, dim: int, eps: float = 1e-6):
         """
         Initialize the RMSNorm normalization layer.
@@ -107,7 +110,7 @@ class Attention(nn.Module):
             shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
             return pos_cis.view(*shape)
 
-        # 转为复数
+        # 转为虚数
         xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
         xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
         # 将位置编码调整为合适的形状
