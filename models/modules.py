@@ -19,6 +19,7 @@ class RMSNorm(torch.nn.Module):
     """
     计算更高效、更稳定
     """
+
     def __init__(self, dim: int, eps: float = 1e-6):
         """
         Initialize the RMSNorm normalization layer.
@@ -82,6 +83,7 @@ class Attention(nn.Module):
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
+        # 判断是否有flash_attn，如果存在则使用flash_attn进行加速，否则使用常规的attention计算。
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
         # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
         mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
@@ -155,17 +157,24 @@ class Attention(nn.Module):
         xq, xk = self.apply_rotary_emb(xq, xk, pos_cis)
 
         # kv_cache实现
-        if past_key_value is not None:
+        # 生成第 t 个 token 时，注意力机制需要用到前 t−1 token 的 Key 和 Value。
+        # 如果没有 KV Cache，每次生成新 token 都需要重新计算所有的 K 和 V，这会导致重复计算。
+        # 缓存机制：将前 t−1 步计算得到的 Key 和 Value 缓存在内存中。
+        # 增量计算：在第 t 步，仅需为当前输入计算新的 Key 和 Value，并将其与缓存的 Key 和 Value 拼接起来。
+        if past_key_value is not None:  # 判断是否有缓存
             xk = torch.cat([past_key_value[0], xk], dim=1)
             xv = torch.cat([past_key_value[1], xv], dim=1)
-        past_kv = (xk, xv) if use_cache else None
+        past_kv = (xk, xv) if use_cache else None  # 更新缓存
 
+        # 实现GQA（Grouped Query Attention）提高计算效率并减少显存占用, MHA与MQA（Mutil-Query Attention）的折中
         xq, xk, xv = (
             xq.transpose(1, 2),
             self.repeat_kv(xk, self.n_rep).transpose(1, 2),
             self.repeat_kv(xv, self.n_rep).transpose(1, 2)
         )
-        if self.flash and seq_len != 1:
+        if self.flash and seq_len != 1:  # flash attention
+            # Flash Attention 是对标准缩放点积注意力公式的 硬件优化实现，
+            # 通过 内存优化、并行化 和 低级硬件加速，显著提高了大规模模型和长序列输入的处理速度。
             dropout_p = self.dropout if self.training else 0.0
             output = F.scaled_dot_product_attention(
                 xq, xk, xv,
