@@ -98,7 +98,7 @@ class Attention(nn.Module):
         xk：键张量（Key Tensor），形状是 (batch_size, seq_len, num_kv_heads, head_dim)，表示键向量。
         pos_cis：位置编码（Position Encodings），形状是 (seq_len, head_dim)，表示每个位置的旋转编码。
 
-        为什么要用复数： 复数乘法恰好能够表达旋转，
+        为什么要用虚数： 虚数乘法恰好能够表达旋转，
         """
 
         def unite_shape(pos_cis, x):
@@ -117,7 +117,7 @@ class Attention(nn.Module):
         xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
         # 将位置编码调整为合适的形状
         pos_cis = unite_shape(pos_cis, xq_)
-        # 对查询和键进行旋转,并将复数结果转换回实数形式
+        # 对查询和键进行旋转,并将虚数结果转换回实数形式
         xq_out = torch.view_as_real(xq_ * pos_cis).flatten(3)
         xk_out = torch.view_as_real(xk_ * pos_cis).flatten(3)
         return xq_out.type_as(xq), xk_out.type_as(xk)
