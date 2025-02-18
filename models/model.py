@@ -9,8 +9,10 @@
 """
 
 from torch import nn
-
 from models.modules import RMSNorm
+import torch.nn.functional as F
+from models.modules import Attention
+from models.config import LMConfig
 
 
 class LLMModel(nn.Module):
@@ -45,29 +47,37 @@ class PositionEmbedding(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, norm_type='rms'):
         super(TransformerBlock).__init__()
-        self.attention = nn.MultiheadAttention(embed_dim=768, num_heads=12)
-        if norm_type == 'rms':
-            self.norm = RMSNorm(dim=768)
-        else:
-            self.norm = nn.LayerNorm(normalized_shape=768)
+        self.args = LMConfig()
+        self.attn_norm = RMSNorm(self.args.norm_dim)
+        self.attention = Attention(args=self.args)
+        self.ffn_norm = RMSNorm(self.args.norm_dim)
         self.feed_forward = FeedForwardLayer()
 
     def forward(self, inputs):
-        attention_output = self.attention(inputs, inputs, inputs)
-        normalized_output = self.norm(attention_output + inputs)
-        feed_forward_output = self.feed_forward(normalized_output)
+        att_inputs = self.attn_norm(inputs)
+        att_outputs = self.attention(att_inputs)
+        # residual connection
+        att_outputs = inputs + att_outputs
+
+        fead_forward_inputs = self.ffn_norm(att_outputs)
+        feed_forward_output = self.feed_forward(fead_forward_inputs)
+        # residual connection
+        feed_forward_output = att_outputs + feed_forward_output
         return feed_forward_output
 
 
 class FeedForwardLayer(nn.Module):
-    def __init__(self, ):
-        super(FeedForwardLayer).__init__()
-        self.linear1 = nn.Linear(in_features=768, out_features=3072)
-        self.linear2 = nn.Linear(in_features=3072, out_features=768)
-        self.relu = nn.ReLU()
+    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = 4 * dim
+            hidden_dim = int(2 * hidden_dim / 3)
+            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, inputs):
-        output = self.linear1(inputs)
-        output = self.relu(output)
-        output = self.linear2(output)
-        return output
+    def forward(self, x):
+        # SiLU 函数的优点在于它能够平滑地处理负值，并且在正值输入时提供较大的输出范围.它有助于保持梯度的流动，避免梯度消失问题。
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))

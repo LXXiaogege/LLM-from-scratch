@@ -15,3 +15,4 @@ class LMConfig:
         self.max_seq_len = 1024
         self.n_kv_heads = None
         self.flash_attn = False
+        self.norm_dim = 768
