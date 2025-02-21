@@ -9,6 +9,7 @@
 
 class LMConfig:
     def __init__(self):
+        # attention layer
         self.n_heads = 12
         self.dim = 768
         self.dropout = 0.1
@@ -28,5 +29,10 @@ class LMConfig:
         self.ffn_dropout = 0.1
 
         # moe
-        self.n_router_experts = 100
+        self.n_routed_experts = 100
         self.n_shared_experts = 1
+        self.num_experts_per_tok = 8
+        self.scoring_func = "softmax"
+        self.aux_loss_alpha = 0.01
+        self.seq_aux = False
+        self.norm_topk_prob = False
