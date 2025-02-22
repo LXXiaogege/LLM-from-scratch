@@ -56,16 +56,24 @@ class TransformerBlock(nn.Module):
         self.attn_norm = RMSNorm(self.args.norm_dim)
         self.attention = Attention(args=self.args)
         self.ffn_norm = RMSNorm(self.args.norm_dim)
-        self.feed_forward = FeedForwardLayer()
+        self.moe_layer = MOElLayer(args=self.args)
 
-    def forward(self, inputs):
+    def forward(self, inputs, pos_cis, past_key_value=None, use_cache=False):
+        """
+
+        param inputs: 输入张量， `[batch_size, seq_len, hidden_dim]`
+        param pos_cis: 位置编码
+        param past_key_value: 前 t−1 token的 k v cache，用于加速自回归生成
+        param use_cache: 是否使用缓存 k_v cache
+        return: 输出张量，形状为 `[batch_size, seq_len, hidden_dim]`
+        """
         att_inputs = self.attn_norm(inputs)
-        att_outputs = self.attention(att_inputs)
+        att_outputs = self.attention(att_inputs, pos_cis, past_key_value, use_cache)
         # residual connection
         att_outputs = inputs + att_outputs
 
         fead_forward_inputs = self.ffn_norm(att_outputs)
-        feed_forward_output = self.feed_forward(fead_forward_inputs)
+        feed_forward_output = self.moe_layer(fead_forward_inputs)
         # residual connection
         feed_forward_output = att_outputs + feed_forward_output
         return feed_forward_output
@@ -87,18 +95,6 @@ class FeedForwardLayer(nn.Module):
     def forward(self, x):
         # SiLU 函数的优点在于它能够平滑地处理负值，并且在正值输入时提供较大的输出范围.它有助于保持梯度的流动，避免梯度消失问题。
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
-
-
-class RouterExpert(nn.Module):
-    """
-    路由专家
-    """
-
-    def __init__(self, args: LMConfig):
-        super(RouterExpert).__init__()
-
-    def forward(self, inputs):
-        pass
 
 
 class Router(nn.Module):
@@ -180,10 +176,65 @@ class MOElLayer(nn.Module):
     def __init__(self, args: LMConfig):
         super(MOElLayer).__init__()
         self.args = args
+        self.router = Router(args)
         #  路由专家
-        self.router_experts = nn.ModuleList([FeedForwardLayer(args) for _ in range(args.n_router_experts)])
+        self.router_experts = nn.ModuleList([FeedForwardLayer(args) for _ in range(args.n_routed_experts)])
         # 共享专家
-        self.shared_experts = nn.ModuleList([FeedForwardLayer(args) for _ in range(args.n_shared_experts)])
+        if args.n_shared_experts is not None:
+            self.shared_experts = nn.ModuleList([FeedForwardLayer(args) for _ in range(args.n_shared_experts)])
+        self.aux_loss = None
 
-    def forward(self, inputs):
-        pass
+    @torch.no_grad()
+    def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
+        """
+        在推理模式，模型只选择最优的专家进行计算。根据输入的专家索引和权重，选择合适的专家进行推理计算
+        """
+        # 用于存储最终的加权专家输出，初始化为与 x 相同形状的零张量
+        expert_cache = torch.zeros_like(x)
+        # 将 flat_expert_indices 按照升序排列，并返回排序后的索引
+        idxs = flat_expert_indices.argsort()
+        # 计算每个专家处理的 token 数量
+        tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum(0)
+        # 计算每个 token 所属的专家
+        token_idxs = idxs // self.config.num_experts_per_tok
+        # 例如当tokens_per_expert=[6, 15, 20, 26, 33, 38, 46, 52]
+        # 当token_idxs=[3, 7, 19, 21, 24, 25,  4,  5,  6, 10, 11, 12...]
+        # 意味着当token_idxs[:6] -> [3,  7, 19, 21, 24, 25,  4]位置的token都由专家0处理，token_idxs[6:15]位置的token都由专家1处理......
+        # 迭代每个专家，进行推理计算
+        for i, end_idx in enumerate(tokens_per_expert):
+            start_idx = 0 if i == 0 else tokens_per_expert[i - 1]
+            if start_idx == end_idx:  # 跳过没有处理 token 的专家
+                continue
+            expert = self.experts[i]
+            exp_token_idx = token_idxs[start_idx:end_idx]
+            expert_tokens = x[exp_token_idx]
+            expert_out = expert(expert_tokens).to(expert_cache.dtype)
+            # 加权输出
+            expert_out.mul_(flat_expert_weights[idxs[start_idx:end_idx]])
+            # 累加专家输出到 expert_cache, 使用 scatter_add_ 进行 sum 操作
+            expert_cache.scatter_add_(0, exp_token_idx.view(-1, 1).repeat(1, x.shape[-1]), expert_out)
+        return expert_cache
+
+    def forward(self, x):
+        identity = x
+        orig_shape = x.shape
+        bsz, seq_len, _ = x.shape
+        # 使用门控机制选择专家
+        topk_idx, topk_weight, aux_loss = self.router(x)  # topk_idx， topk_weight(bsz * seq_len, top_k)
+        x = x.view(-1, x.shape[-1])  # (bsz * seq_len, h)
+        flat_topk_idx = topk_idx.view(-1)  # (bsz * seq_len * top_k)
+        if self.training:
+            # 训练模式下，重复输入数据
+            x = x.repeat_interleave(self.config.num_experts_per_tok, dim=0)  # （bsz * seq_len * top_k, h)
+            y = torch.empty_like(x, dtype=torch.float16)  # (bsz * seq_len * top_k, h)
+            for i, expert in enumerate(self.experts):
+                y[flat_topk_idx == i] = expert(x[flat_topk_idx == i]).to(y.dtype)  # 确保类型一致,(bsz * seq_len * top_k, h)
+            y = (y.view(*topk_weight.shape, -1) * topk_weight.unsqueeze(-1)).sum(dim=1)  # 加权和所有专家的输出 (bsz * seq_len, h)
+            y = y.view(*orig_shape)  # (bsz, seq_len, h)
+        else:
+            # 推理模式下，只选择最优专家
+            y = self.moe_infer(x, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
+        if self.config.n_shared_experts is not None:
+            y = y + self.shared_experts(identity)
+        self.aux_loss = aux_loss
+        return y
