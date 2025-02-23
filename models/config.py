@@ -9,7 +9,7 @@
 
 class LMConfig:
     def __init__(self):
-        self.vocab_size = 50257
+        self.vocab_size = 6400
         self.max_seq_len = 8192
         self.embedding_dim = 512
         self.dropout = 0.1
