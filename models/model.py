@@ -28,7 +28,7 @@ class LLMModel(nn.Module):
         self.transformer_blocks = nn.ModuleList(
             [TransformerBlock() for _ in range(args.n_layers)]
         )
-        self.norm = RMSNorm(args.norm_dim)
+        self.norm = RMSNorm(args.embedding_dim, eps=args.norm_eps)
         self.output = nn.Linear(args.embedding_dim, args.vocab_size)
         # 将模型的多个输出封装成一个对象，以便后续处理。
         self.OUT = CausalLMOutputWithPast()
@@ -50,12 +50,11 @@ class LLMModel(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, norm_type='rms'):
+    def __init__(self, args: LMConfig):
         super(TransformerBlock).__init__()
-        self.args = LMConfig()
-        self.attn_norm = RMSNorm(self.args.norm_dim)
+        self.attn_norm = RMSNorm(dim=args.embedding_dim, eps=args.norm_eps)
         self.attention = Attention(args=self.args)
-        self.ffn_norm = RMSNorm(self.args.norm_dim)
+        self.ffn_norm = RMSNorm(dim=args.embedding_dim, eps=args.norm_eps)
         self.moe_layer = MOElLayer(args=self.args)
 
     def forward(self, inputs, pos_cis, past_key_value=None, use_cache=False):
@@ -84,13 +83,13 @@ class FeedForwardLayer(nn.Module):
         super().__init__()
         self.ffn_hidden_dim = args.ffn_hidden_dim
         if self.ffn_hidden_dim is None:
-            self.ffn_hidden_dim = 4 * args.ffn_dim
+            self.ffn_hidden_dim = 4 * args.embedding_dim
             self.ffn_hidden_dim = int(2 * self.ffn_hidden_dim / 3)
             self.ffn_hidden_dim = args.multiple_of * ((self.ffn_hidden_dim + args.multiple_of - 1) // args.multiple_of)
-        self.w1 = nn.Linear(args.ffn_dim, self.ffn_hidden_dim, bias=False)
-        self.w2 = nn.Linear(args.ffn_hidden_dim, args.ffn_dim, bias=False)
-        self.w3 = nn.Linear(args.ffn_dim, args.ffn_hidden_dim, bias=False)
-        self.dropout = nn.Dropout(args.ffn_dropout)
+        self.w1 = nn.Linear(args.embedding_dim, self.ffn_hidden_dim, bias=False)
+        self.w2 = nn.Linear(args.ffn_hidden_dim, args.embedding_dim, bias=False)
+        self.w3 = nn.Linear(args.embedding_dim, args.ffn_hidden_dim, bias=False)
+        self.dropout = nn.Dropout(args.dropout)
 
     def forward(self, x):
         # SiLU 函数的优点在于它能够平滑地处理负值，并且在正值输入时提供较大的输出范围.它有助于保持梯度的流动，避免梯度消失问题。
@@ -120,7 +119,7 @@ class Router(nn.Module):
         # 是否对 top K 的权重进行归一化
         self.norm_topk_prob = args.norm_topk_prob
         #
-        self.gating_dim = args.dim
+        self.gating_dim = args.embedding_dim
         # 可学习的参数，用于生成每个专家的权重
         self.weight = nn.Parameter(torch.empty((self.n_routed_experts, self.gating_dim)))
         # 初始化专家权重

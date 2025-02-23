@@ -10,7 +10,7 @@ from torch import nn
 import torch
 import torch.nn.functional as F
 import math
-from typing import Tuple, Optional, Literal
+from typing import Tuple, Optional
 
 from models.config import LMConfig
 
@@ -75,19 +75,22 @@ class Attention(nn.Module):
         self.n_local_heads = args.n_heads
         self.n_local_kv_heads = self.n_kv_heads
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
-        self.head_dim = args.dim // args.n_heads
-        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
+        self.head_dim = args.embedding_dim // args.n_heads
+        self.wq = nn.Linear(args.embedding_dim, args.n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(args.embedding_dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(args.embedding_dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(args.n_heads * self.head_dim, args.embedding_dim, bias=False)
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
         # 判断是否有flash_attn，如果存在则使用flash_attn进行加速，否则使用常规的attention计算。
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
         # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+
+        # 初始化上三角矩阵作为mask
         mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
         mask = torch.triu(mask, diagonal=1)
+        # register_buffer存储一些在训练过程中更新的（但不需要梯度的）状态或常量
         self.register_buffer("mask", mask, persistent=False)
 
     def apply_rotary_emb(self, xq, xk, pos_cis):

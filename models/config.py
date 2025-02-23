@@ -9,24 +9,25 @@
 
 class LMConfig:
     def __init__(self):
-        # attention layer
-        self.n_heads = 12
-        self.dim = 768
-        self.dropout = 0.1
-        self.max_seq_len = 1024
-        self.n_kv_heads = None
-        self.flash_attn = False
-        self.norm_dim = 768
-
         self.vocab_size = 50257
-        self.embedding_dim = 768
-        self.n_layers = 12
+        self.max_seq_len = 8192
+        self.embedding_dim = 512
+        self.dropout = 0.1
+
+        # block
+        self.n_layers = 8
+
+        # rms norm
+        self.norm_eps = 1e-5
+
+        # attention layer
+        self.n_heads = 8
+        self.n_kv_heads = 2
+        self.flash_attn = False
 
         # feed forward layer
-        self.multiple_of = 256
+        self.multiple_of = 64
         self.ffn_hidden_dim = None
-        self.ffn_dim = 256
-        self.ffn_dropout = 0.1
 
         # moe
         self.n_routed_experts = 100
