@@ -13,6 +13,7 @@ class LMConfig:
         self.max_seq_len = 8192
         self.embedding_dim = 512
         self.dropout = 0.1
+        self.use_embedding_dropout = True
 
         # block
         self.n_layers = 8
@@ -30,6 +31,7 @@ class LMConfig:
         self.ffn_hidden_dim = None
 
         # moe
+        self.use_moe = True
         self.n_routed_experts = 100
         self.n_shared_experts = 1
         self.num_experts_per_tok = 8

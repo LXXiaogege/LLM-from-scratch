@@ -22,30 +22,59 @@ import torch.nn.init as init
 class LLMModel(nn.Module):
     def __init__(self, args: LMConfig):
         super(LLMModel).__init__()
+        self.args = args
         # embedding layer
         self.embedding = nn.Embedding(num_embeddings=args.vocab_size, embedding_dim=args.embedding_dim)
+        self.embedded_dropout = nn.Dropout(args.dropout)
         # transformer blocks
         self.transformer_blocks = nn.ModuleList(
-            [TransformerBlock() for _ in range(args.n_layers)]
+            [TransformerBlock(args) for _ in range(args.n_layers)]
         )
         self.norm = RMSNorm(args.embedding_dim, eps=args.norm_eps)
         self.output = nn.Linear(args.embedding_dim, args.vocab_size)
         # 将模型的多个输出封装成一个对象，以便后续处理。
         self.OUT = CausalLMOutputWithPast()
 
-    def forward(self, inputs):
-        embedded = self.embedding(inputs)
-        for transformer_block in self.transformer_blocks:
-            embedded = transformer_block(embedded)
+    def forward(self, input_ids=None, past_key_values=None, use_cache: bool = False, **args):
+        """
+
+        :param input_ids: (batch_size, seq_len)
+        :param past_key_values:包含先前的计算结果，key 和 value（在自注意力机制中用于加速计算）。如果是第一次推理，past_key_values 为 None
+        :param use_cache:
+        :param args:
+        :return:
+        """
+
+        # 用于标记每个 token 在序列中的位置。start_pos 确定了序列的起始位置，pos_cis 用来提取位置编码
+        start_pos = args.get('start_pos', 0)
+        pos_cis = self.pos_cis[start_pos:start_pos + input_ids.size(1)]
+
+        past_key_values = past_key_values or [None] * len(self.transformer_blocks)
+
+        embedded = self.embedding(input_ids)
+        # 小规模数据集：数据量不足时，embedding层参数量大（尤其是词表庞大的NLP任务），易过拟合。Dropout可有效抑制过拟合
+        # 大规模预训练：数据充足时,embedding 后 Dropout可能损害语义完整性，主流大模型通常省略此处的Dropout。
+        if self.args.use_embedding_dropout:
+            embedded = self.embedded_dropout(embedded)
+
+        past_kvs = []
+        for idx, transformer_block in enumerate(self.transformer_blocks):
+            embedded, past_kv = transformer_block(embedded, pos_cis=pos_cis, past_kv=past_key_values[idx],
+                                                  use_cache=use_cache)
+            past_kvs.append(past_kv)
+
         logits = self.output(self.norm(embedded))
+        # MoE模型中用于控制专家激活的辅助损失,用于负载均衡
+        aux_loss = sum(
+            l.feed_forward.aux_loss for l in self.transformer_blocks if isinstance(l.feed_forward, MOElLayer))
 
         # 在模型的输出层，通常直接输出 logits，而不是通过 softmax 转换为概率。这是因为：
         # 1. softmax 通常在训练或推理时的后续步骤中应用，而不是模型内部。
         # 2. 使用 logits 更加灵活，尤其是对于生成任务（如语言模型），可以根据 logits 做不同的解码操作。
         # 3. 在训练时，CrossEntropyLoss 会自动处理 softmax，所以模型不需要显式地应用它。
         self.OUT.__setitem__('logits', logits)
-        # self.OUT.__setitem__('aux_loss', aux_loss)
-        # self.OUT.__setitem__('past_key_values', past_kvs)        __
+        self.OUT.__setitem__('aux_loss', aux_loss)
+        self.OUT.__setitem__('past_key_values', past_kvs)
         return self.OUT
 
 
@@ -55,7 +84,7 @@ class TransformerBlock(nn.Module):
         self.attn_norm = RMSNorm(dim=args.embedding_dim, eps=args.norm_eps)
         self.attention = Attention(args=self.args)
         self.ffn_norm = RMSNorm(dim=args.embedding_dim, eps=args.norm_eps)
-        self.moe_layer = MOElLayer(args=self.args)
+        self.feed_forward = FeedForwardLayer(args) if not args.use_moe else MOElLayer(args)
 
     def forward(self, inputs, pos_cis, past_key_value=None, use_cache=False):
         """
@@ -67,15 +96,15 @@ class TransformerBlock(nn.Module):
         return: 输出张量，形状为 `[batch_size, seq_len, hidden_dim]`
         """
         att_inputs = self.attn_norm(inputs)
-        att_outputs = self.attention(att_inputs, pos_cis, past_key_value, use_cache)
+        att_outputs, past_kv = self.attention(att_inputs, pos_cis, past_key_value, use_cache)
         # residual connection
         att_outputs = inputs + att_outputs
 
         fead_forward_inputs = self.ffn_norm(att_outputs)
-        feed_forward_output = self.moe_layer(fead_forward_inputs)
+        feed_forward_output = self.feed_forward(fead_forward_inputs)
         # residual connection
         feed_forward_output = att_outputs + feed_forward_output
-        return feed_forward_output
+        return feed_forward_output, past_kv
 
 
 class FeedForwardLayer(nn.Module):
