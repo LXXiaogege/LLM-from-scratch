@@ -77,6 +77,94 @@ class LLMModel(nn.Module):
         self.OUT.__setitem__('past_key_values', past_kvs)
         return self.OUT
 
+    """
+    torch.no_grad() 适合短期推理（不影响 Autograd 机制）
+    torch.inference_mode() 适合大规模推理（更高效，完全关闭 Autograd)
+    """
+
+    @torch.inference_mode()
+    def generate(self, input_ids, eos_token_id=2, max_new_tokens=1024, temperature=0.75, top_p=0.90,
+                 stream=False, rp=1., use_cache=True, pad_token_id=0, **args):
+        """
+
+        :param input_ids: 输入的 token ID， (batch_size, seq_len)。
+        :param eos_token_id: 终止 token ID，表示文本生成到达结尾时的标志
+        :param max_new_tokens: 最大生成 token 数
+        :param temperature: 温度参数，控制生成的多样性。值越高（如 1.5），输出越随机，值越低（如 0.2），输出更确定。
+        :param top_p: 核采样（Top-p Sampling），控制生成 token 的范围，降低低概率 token 的影响。
+        :param stream: 是否 流式 生成
+        :param rp: rp 的取值通常是大于 1 的数值，常见的选择是 1.2 到 2.0 之间，rp = 1.0：表示没有任何重复惩罚，rp > 1.0：增加重复惩罚
+        :param use_cache: 是否使用缓存，加速推理（适用于增量推理）
+        :param pad_token_id: padding token 的 ID
+        :return:
+        """
+        # 流式生成
+        if stream:
+            return self._stream(input_ids, eos_token_id, max_new_tokens, temperature, top_p, rp, use_cache, **args)
+
+        # 直接生成
+        generated = []  # 用来存储每个样本的生成结果
+        for i in range(input_ids.size(0)):
+            non_pad = input_ids[i][input_ids[i] != pad_token_id].unsqueeze(0)  # (1, valid_seq_len)，获取非 padding 部分的输入id
+            out = self._stream(non_pad, eos_token_id, max_new_tokens, temperature, top_p, rp, use_cache,
+                               **args)  # out shape：(batch_size, seq_len + new_tokens)
+            tokens_list = [tokens[:, -1:] for tokens in out]  # 提取每个输出序列的最后一个 token
+            gen = torch.cat(tokens_list, dim=-1) if tokens_list else non_pad  # 合并生成的 token，(batch_size, 1)
+            # 拼接非 padding 部分的输入和生成的 token，(batch_size, valid_seq_len + num_generated_tokens)
+            full_sequence = torch.cat([non_pad, gen], dim=-1)
+            generated.append(full_sequence)
+
+        # 确保输出形状一致
+        max_length = max(seq.size(1) for seq in generated)
+        generated = [
+            torch.cat(
+                [seq, torch.full((1, max_length - seq.size(1)), pad_token_id, dtype=seq.dtype, device=seq.device)],
+                dim=-1)
+            for seq in generated
+        ]
+        return torch.cat(generated, dim=0)  # (batch_size, max_length)
+
+    def _stream(self, input_ids, eos_token_id, max_new_tokens, temperature, top_p, rp, use_cache, **args):
+
+        # start: 开始时的 token 索引 ;
+        # first_seq: 是否是第一次处理输入，用来决定是否使用 use_cache
+        # past_kvs: 缓存的 past_key_values，用于加速推理
+        start, first_seq, past_kvs = input_ids.shape[1], True, None
+        while input_ids.shape[1] < max_new_tokens - 1:
+            if first_seq or not use_cache:
+                # 模型推理,调用forward函数
+                # 第一次生成，past_key_values 为空，使用 input_ids 生成输出，
+                out, first_seq = self(input_ids, past_key_values=past_kvs, use_cache=use_cache, **args), False
+            else:
+                # 只使用最后一个 token 和past_key_values进行生成
+                out = self(input_ids[:, -1:], past_key_values=past_kvs, use_cache=use_cache,
+                           start_pos=input_ids.shape[1] - 1, **args)
+            logits, past_kvs = out.logits[:, -1, :], out.past_key_values
+
+            # 重复惩罚（Repetition Penalty），防止模型生成与先前已生成的 tokens 相同的内容，这样能使生成的文本更加多样化和自然。
+            logits[:, list(set(input_ids.tolist()[0]))] /= rp
+            # 对 logits 进行了缩放，以控制生成的文本的多样性。
+            # 高温度（> 1）：导致 softmax 计算出的概率变得更接近，这样每个 token 采样的机会更均等，生成的文本变得更随机和多样。
+            # 低温度（< 1）：缩放后，logits 的差异会被放大，较大的 logits 会变得更突出，较小的 logits 会被压缩到接近 0，
+            # 导致 softmax 输出的概率分布变得更加集中，某些高概率的 token 更容易被选中，生成的文本会比较平滑。
+            logits /= (temperature + 1e-9)
+
+            # 累加生成文本时提高采样的多样性并避免生成低概率的垃圾文本，较小的 p 生成文本更保守，较大的 p 生成的文本更具多样性。
+            if top_p is not None and top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+                sorted_probs = F.softmax(sorted_logits, dim=-1)
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+                sorted_indices_to_remove[:, 0] = False
+                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = -float('Inf')
+            input_ids_next = torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)  # 从概率分布中采样选择一个token作为下一个输入
+            input_ids = torch.cat((input_ids, input_ids_next), dim=1)
+            yield input_ids[:, start:]  # (batch_size, seq_len + 1)
+            if input_ids_next.item() == eos_token_id:
+                break
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, args: LMConfig):
