@@ -9,7 +9,10 @@
 """
 import argparse
 import torch
+from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer
+
+from datasets.llm_dataset import PretrainDataset
 from models.model import LLMModel
 from models.config import LMConfig
 import torch.distributed as dist
@@ -24,8 +27,8 @@ def Logger(content, ddp):
         print(content)
 
 
-def init_model(lm_config):
-    tokenizer = AutoTokenizer.from_pretrained('./models/tokenizer')
+def init_model(lm_config, args):
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
     model = LLMModel(lm_config).to(args.device)
     Logger(f'LLM总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     return model, tokenizer
@@ -65,15 +68,32 @@ def parse_args():
     parser.add_argument('--n_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--use_moe', default=False, type=bool)
-    parser.add_argument("--data_path", type=str, default="./dataset/pretrain_hq.jsonl")
+    parser.add_argument("--data_path", type=str, default="/Users/lvxin/datasets/llm/pretrain_hq.jsonl")
+    parser.add_argument("--tokenizer_path", type=str, default="./models/tokenizer")
     return parser.parse_args()
 
 
-if __name__ == '__main__':
+def main():
     args = parse_args()
 
     lm_config = LMConfig(embedding_dim=args.embedding_dim, n_layers=args.n_layers, max_seq_len=args.max_seq_len,
                          use_moe=args.use_moe)
+    model, tokenizer = init_model(lm_config, args)
+
+    train_ds = PretrainDataset(args.data_path, tokenizer, max_length=lm_config.max_seq_len)
+    # 根据是否启用分布式训练，选择是否使用 DistributedSampler 来分配数据
+    # 在分布式训练中，DistributedSampler 会将数据集划分成多个部分，每个训练进程只处理其中一部分。这样可以确保每个进程处理不同的数据，避免重复处理
+    train_sampler = DistributedSampler(train_ds) if args.ddp else None
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        pin_memory=True,
+        drop_last=False,
+        shuffle=False,
+        num_workers=args.num_workers,
+        sampler=train_sampler  # 如果启用了分布式训练并且使用了 DistributedSampler，则数据将会被分配到不同的进程中
+    )
+
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
@@ -81,4 +101,9 @@ if __name__ == '__main__':
     tokens_per_iter = args.batch_size * lm_config.max_seq_len
     torch.manual_seed(1337)
     device_type = "cuda" if "cuda" in args.device else "cpu"
+
     train(args)
+
+
+if __name__ == '__main__':
+    main()
