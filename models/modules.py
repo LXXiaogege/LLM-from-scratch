@@ -33,7 +33,7 @@ class RMSNorm(torch.nn.Module):
             weight (nn.Parameter): Learnable scaling parameter.
 
         """
-        super().__init__()
+        super(RMSNorm, self).__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
@@ -69,7 +69,7 @@ class RMSNorm(torch.nn.Module):
 
 class Attention(nn.Module):
     def __init__(self, args: LMConfig):
-        super().__init__()
+        super(Attention, self).__init__()
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
         assert args.n_heads % self.n_kv_heads == 0
         self.n_local_heads = args.n_heads

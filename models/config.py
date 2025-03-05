@@ -5,9 +5,10 @@
 @File ：config.py
 @IDE ：PyCharm
 """
+from transformers import PretrainedConfig
 
 
-class LMConfig:
+class LMConfig(PretrainedConfig):
     def __init__(self, vaocab_size=6400,
                  max_seq_len=8192,
                  embedding_dim=512,
@@ -19,7 +20,8 @@ class LMConfig:
                  n_kv_heads=2,
                  flash_attn=False,
                  multiple_of=64,
-                 ffn_hidden_dim=None,
+                 rope_theta: int = 1e6,
+                 ffn_hidden_dim: int = None,
                  use_moe=True,
                  n_routed_experts=100,
                  n_shared_experts=1,
@@ -28,6 +30,7 @@ class LMConfig:
                  aux_loss_alpha=0.01,
                  seq_aux=False,
                  norm_topk_prob=False):
+        super(LMConfig, self).__init__()
         self.vocab_size = vaocab_size
         self.max_seq_len = max_seq_len
         self.embedding_dim = embedding_dim
@@ -39,6 +42,9 @@ class LMConfig:
 
         # rms norm
         self.norm_eps = norm_eps
+
+        # rope
+        self.rope_theta = rope_theta
 
         # attention layer
         self.n_heads = n_heads

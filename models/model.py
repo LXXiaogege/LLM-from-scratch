@@ -17,12 +17,23 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 import torch
 import math
 import torch.nn.init as init
+from transformers import PreTrainedModel
 
 
-class LLMModel(nn.Module):
-    def __init__(self, args: LMConfig):
-        super(LLMModel).__init__()
-        self.args = args
+def precompute_pos_cis(dim: int, end: int = int(32 * 1024), theta: float = 1e6):
+    # todo ???
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=freqs.device)  # type: ignore
+    freqs = torch.outer(t, freqs).float()  # type: ignore
+    pos_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
+    return pos_cis
+
+
+class LLMModel(PreTrainedModel):  # 继承PreTrainedModel
+    def __init__(self, args: LMConfig = None):
+        self.args = args or LMConfig()
+        # 继承自 PreTrainedModel, 需要一个 config 作为参数
+        super(LLMModel, self).__init__(self.args)
         # embedding layer
         self.embedding = nn.Embedding(num_embeddings=args.vocab_size, embedding_dim=args.embedding_dim)
         self.embedded_dropout = nn.Dropout(args.dropout)
@@ -32,6 +43,13 @@ class LLMModel(nn.Module):
         )
         self.norm = RMSNorm(args.embedding_dim, eps=args.norm_eps)
         self.output = nn.Linear(args.embedding_dim, args.vocab_size)
+
+        # self.register_buffer("pos_cis", precompute_pos_cis(args.dim // args.n_heads, args.max_seq_len,
+        #                                                    theta=args.rope_theta), persistent=False)
+        self.register_buffer("pos_cis",
+                             precompute_pos_cis(dim=args.embedding_dim // args.n_heads, theta=args.rope_theta),
+                             persistent=False)
+
         # 将模型的多个输出封装成一个对象，以便后续处理。
         self.OUT = CausalLMOutputWithPast()
 
@@ -59,7 +77,7 @@ class LLMModel(nn.Module):
 
         past_kvs = []
         for idx, transformer_block in enumerate(self.transformer_blocks):
-            embedded, past_kv = transformer_block(embedded, pos_cis=pos_cis, past_kv=past_key_values[idx],
+            embedded, past_kv = transformer_block(embedded, pos_cis=pos_cis, past_key_value=past_key_values[idx],
                                                   use_cache=use_cache)
             past_kvs.append(past_kv)
 
@@ -168,9 +186,9 @@ class LLMModel(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, args: LMConfig):
-        super(TransformerBlock).__init__()
+        super(TransformerBlock, self).__init__()
         self.attn_norm = RMSNorm(dim=args.embedding_dim, eps=args.norm_eps)
-        self.attention = Attention(args=self.args)
+        self.attention = Attention(args=args)
         self.ffn_norm = RMSNorm(dim=args.embedding_dim, eps=args.norm_eps)
         self.feed_forward = FeedForwardLayer(args) if not args.use_moe else MOElLayer(args)
 
@@ -197,13 +215,12 @@ class TransformerBlock(nn.Module):
 
 class FeedForwardLayer(nn.Module):
     def __init__(self, args: LMConfig):
-        super().__init__()
-        self.ffn_hidden_dim = args.ffn_hidden_dim
-        if self.ffn_hidden_dim is None:
-            self.ffn_hidden_dim = 4 * args.embedding_dim
-            self.ffn_hidden_dim = int(2 * self.ffn_hidden_dim / 3)
-            self.ffn_hidden_dim = args.multiple_of * ((self.ffn_hidden_dim + args.multiple_of - 1) // args.multiple_of)
-        self.w1 = nn.Linear(args.embedding_dim, self.ffn_hidden_dim, bias=False)
+        super(FeedForwardLayer, self).__init__()
+        if args.ffn_hidden_dim is None:
+            ffn_hidden_dim = 4 * args.embedding_dim
+            ffn_hidden_dim = int(2 * ffn_hidden_dim / 3)
+            args.ffn_hidden_dim = args.multiple_of * ((ffn_hidden_dim + args.multiple_of - 1) // args.multiple_of)
+        self.w1 = nn.Linear(args.embedding_dim, args.ffn_hidden_dim, bias=False)
         self.w2 = nn.Linear(args.ffn_hidden_dim, args.embedding_dim, bias=False)
         self.w3 = nn.Linear(args.embedding_dim, args.ffn_hidden_dim, bias=False)
         self.dropout = nn.Dropout(args.dropout)
@@ -220,7 +237,7 @@ class Router(nn.Module):
     """
 
     def __init__(self, args: LMConfig):
-        super().__init__()
+        super(Router, self).__init__()
         self.args = args
         # 选择评分最高的前 K 个专家。
         self.top_k = args.num_experts_per_tok
@@ -290,7 +307,7 @@ class Router(nn.Module):
 
 class MOElLayer(nn.Module):
     def __init__(self, args: LMConfig):
-        super(MOElLayer).__init__()
+        super(MOElLayer, self).__init__()
         self.args = args
         self.router = Router(args)
         #  路由专家

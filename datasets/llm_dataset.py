@@ -45,7 +45,7 @@ class PretrainDataset(Dataset):
         # 生成一个损失掩码，标记哪些 token 是有效的，哪些是填充（pad） token， [True, True, True, True, False, False, False]
         loss_mask = (input_ids != self.tokenizer.pad_token_id)
 
-        X = torch.tensor(input_ids[:-1], dtype=torch.long)
-        Y = torch.tensor(input_ids[1:], dtype=torch.long)
-        loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)
+        X = torch.as_tensor(input_ids[:-1], dtype=torch.long)
+        Y = torch.as_tensor(input_ids[1:], dtype=torch.long)
+        loss_mask = torch.as_tensor(loss_mask[1:], dtype=torch.long)
         return X, Y, loss_mask
