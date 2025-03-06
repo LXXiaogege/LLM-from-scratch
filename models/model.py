@@ -21,7 +21,7 @@ from transformers import PreTrainedModel
 
 
 def precompute_pos_cis(dim: int, end: int = int(32 * 1024), theta: float = 1e6):
-    # todo ???
+    # 预计算 RoPE 的位置编码
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)  # type: ignore
     freqs = torch.outer(t, freqs).float()  # type: ignore
@@ -44,8 +44,9 @@ class LLMModel(PreTrainedModel):  # 继承PreTrainedModel
         self.norm = RMSNorm(args.embedding_dim, eps=args.norm_eps)
         self.output = nn.Linear(args.embedding_dim, args.vocab_size)
 
-        # self.register_buffer("pos_cis", precompute_pos_cis(args.dim // args.n_heads, args.max_seq_len,
-        #                                                    theta=args.rope_theta), persistent=False)
+        # 在 PyTorch Module 内部注册一个缓冲区（buffer），不作为模型参数，不会被 optimizer 更新
+        # 与 state_dict 管理的权重分开存储，不会占用 state_dict 的空间
+        # 自动迁移到 device（CPU/GPU），直接调用 self.pos_cis，因为 register_buffer 会将其注册为模型的属性
         self.register_buffer("pos_cis",
                              precompute_pos_cis(dim=args.embedding_dim // args.n_heads, theta=args.rope_theta),
                              persistent=False)
