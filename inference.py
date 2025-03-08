@@ -140,7 +140,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    args.stream = True
+    args.stream = False
     model, tokenizer = init_model(args)
 
     prompts = get_prompt_datas(args)
@@ -160,33 +160,40 @@ def main():
             add_generation_prompt=True
         )[-args.max_seq_len + 1:] if args.model_mode != 0 else (tokenizer.bos_token + prompt)
 
-        answer = new_prompt
+        answer = ''
+        x = torch.tensor(tokenizer(new_prompt)['input_ids'], device=args.device).unsqueeze(0)
         with torch.no_grad():
-            x = torch.tensor(tokenizer(new_prompt)['input_ids'], device=args.device).unsqueeze(0)
-            outputs = model.generate(
-                x,
-                eos_token_id=tokenizer.eos_token_id,
-                max_new_tokens=args.max_seq_len,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                stream=args.stream,
-                pad_token_id=tokenizer.pad_token_id
-            )
-
-            print('🤖️: ', end='')
-            try:
-                if not args.stream:
-                    print(tokenizer.decode(outputs.squeeze()[x.shape[1]:].tolist(), skip_special_tokens=True), end='')
-                else:
-                    history_idx = 0
-                    for y in outputs:
-                        answer = tokenizer.decode(y[0].tolist(), skip_special_tokens=True)
-                        if (answer and answer[-1] == '�') or not answer:
-                            continue
-                        print(answer[history_idx:], end='', flush=True)
-                        history_idx = len(answer)
-            except StopIteration:
-                print("No answer")
+            if not args.stream:
+                outputs = model.generate(
+                    x,
+                    eos_token_id=tokenizer.eos_token_id,
+                    max_new_tokens=args.max_seq_len,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    stream=False,
+                    pad_token_id=tokenizer.pad_token_id
+                )
+                print('🤖️: ', end='')
+                answer = tokenizer.decode(outputs.squeeze()[x.shape[1]:].tolist(), skip_special_tokens=True)
+                print(answer, end='')
+            else:
+                for output in model.generate(
+                        x,
+                        eos_token_id=tokenizer.eos_token_id,
+                        max_new_tokens=args.max_seq_len,
+                        temperature=args.temperature,
+                        top_p=args.top_p,
+                        stream=True,
+                        pad_token_id=tokenizer.pad_token_id
+                ):
+                    new_tokens = output[0].tolist()
+                    new_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                    # 处理解码不完整的问题，在流式生成文本时，是逐步解码新生成的 token，但是可能会截断 Unicode 字符，导致 decode() 过程中出现 '�'（即无法解码的字符）
+                    if new_text and new_text[-1] == '�':
+                        continue
+                    # 只输出新生成的部分
+                    print(new_text[len(answer):], end='', flush=True)
+                    answer = new_text  # 更新当前生成的文本
             print('\n')
 
         messages.append({"role": "assistant", "content": answer})
