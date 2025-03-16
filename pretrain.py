@@ -67,6 +67,7 @@ def train(model, train_loader, lm_config, args):
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     # 启用混合精度梯度缩放（GradScaler），，防止梯度下溢。
     scaler = torch.amp.GradScaler('cuda', enabled=(args.dtype in ['float16', 'bfloat16']))
+    # scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ['float16', 'bfloat16']))
     iter_per_epoch = len(train_loader)
 
     for epoch in range(args.epochs):

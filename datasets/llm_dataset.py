@@ -52,7 +52,7 @@ class PretrainDataset(Dataset):
 
 
 class SFTDataset(Dataset):
-    def __init__(self, data_path, tokenizer, max_length=512):
+    def __init__(self, data_path, tokenizer, max_length=1024):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -91,8 +91,8 @@ class SFTDataset(Dataset):
         """构建符合ChatML格式的对话"""
         messages = []
         for i, turn in enumerate(conversations):
-            # role = 'user' if i % 2 == 0 else 'assistant'
-            messages.append({"role": turn['role'], "content": turn['content']})
+            role = 'user' if i % 2 == 0 else 'assistant'
+            messages.append({"role": role, "content": turn['content']})
 
         return self.tokenizer.apply_chat_template(
             messages,
@@ -107,12 +107,16 @@ class SFTDataset(Dataset):
         sample = self.samples[index]
         prompt = self._create_chat_prompt(sample['conversations'])
         input_ids = self.tokenizer(prompt).input_ids[:self.max_length]  # 超长的截断
-        input_ids += [self.tokenizer.pad_token_id * (self.max_length - len(input_ids))]  # 前面截断了，不会担心出现负值
+        input_ids += [self.tokenizer.pad_token_id] * (self.max_length - len(input_ids))  # 前面截断了，不会担心出现负值
         loss_mask = self._generate_loss_mask(input_ids)
 
-        X = torch.as_tensor(input_ids[:-1], dtype=torch.long)
-        Y = torch.as_tensor(input_ids[1:], dtype=torch.long)
-        loss_mask = torch.as_tensor(loss_mask[1:], dtype=torch.long)
+        # X = torch.as_tensor(input_ids[:-1], dtype=torch.long)
+        # Y = torch.as_tensor(input_ids[1:], dtype=torch.long)
+        # loss_mask = torch.as_tensor(loss_mask[1:], dtype=torch.long)
+        # 构建训练数据
+        X = torch.tensor(input_ids[:-1], dtype=torch.long)
+        Y = torch.tensor(input_ids[1:], dtype=torch.long)
+        loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)  # 对齐预测位置
         return X, Y, loss_mask
 
 
