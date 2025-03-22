@@ -33,3 +33,33 @@
   ]
 }
 ```
+
+## RLHF 数据样例
+
+- "chosen" 部分： 包含正确的回答  <br>
+- "rejected" 部分： 包含较差的回答
+
+```json
+{
+  "chosen": [
+    {
+      "content": "How many moles of HBr are required to react with 2 moles of C2H6 to form 2 moles of C2H5Br along with 2 moles of H2?",
+      "role": "user"
+    },
+    {
+      "content": "To determine the number of moles of HBr required to react with 2 moles of C2H6 (ethane) to form 2 moles of C2H5Br (ethyl bromide) and 2 moles of H2, we need to write the balanced chemical equation for the reaction.\n\nThe reaction is a halogenation reaction, specifically the reaction of ethane with hydrogen bromide (HBr) to form ethyl bromide and hydrogen gas. The balanced chemical equation for this reaction is:\n\n\\[ \\text{C}_2\\text{H}_6 + \\text{HBr} \\rightarrow \\text{C}_2\\text{H}_5\\text{Br} + \\text{H}_2 \\]\n\nHowever, this equation is not balanced as written. To balance it, we need to ensure that the number of atoms of each element on the reactant side is equal to the number of atoms of that element on the product side. The balanced equation is:\n\n\\[ \\text{C}_2\\text{H}_6 + \\text{HBr} \\rightarrow \\text{C}_2\\text{H}_5\\text{Br} + \\text{H}_2 \\]\n\nUpon closer inspection, we see that the equation is already balanced as written, with 1 mole of C2H6 reacting with 1 mole of HBr to produce 1 mole of C2H5Br and 1 mole of H2.\n\nGiven that you have 2 moles of C2H6, and the stoichiometry of the reaction is 1:1 for C2H6 to HBr, you would need 2 moles of HBr to react with 2 moles of C2H6 to form 2 moles of C2H5Br and 2 moles of H2.\n\nTherefore, the number of moles of HBr required is **2 moles**.",
+      "role": "assistant"
+    }
+  ],
+  "rejected": [
+    {
+      "content": "How many moles of HBr are required to react with 2 moles of C2H6 to form 2 moles of C2H5Br along with 2 moles of H2?",
+      "role": "user"
+    },
+    {
+      "content": "To answer this question, we need to write down the chemical equation representing the reaction between hydrogen bromide (HBr) and ethane (C2H6):\n\nC2H6(g) + 2HBr(g) \u2192 C2H5Br(l) + H2(g)\n\nNow, we can set up a mole ratio based on the coefficients in front of each substance in the balanced equation:\n\nMoles of HBr : Moles of C2H6 :: 2 : 1\n\nWe also know that there are two moles of C2H6 present in our starting mixture, so we can substitute this value into the above mole ratio to determine the amount of HBr needed:\n\n(2 mol C2H6)/(1 mol C2H6) x 2 mol HBr = 4 mol HBr\n\nSo, four moles of HBr would be required to completely react with two moles of C2H6 according to the given stoichiometric relationship.",
+      "role": "assistant"
+    }
+  ]
+}
+```
