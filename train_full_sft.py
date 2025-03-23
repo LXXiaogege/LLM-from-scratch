@@ -30,6 +30,7 @@ def Logger(content, ddp):
 
 
 def get_lr(current_step, total_steps, lr):
+    """Cosine Annealing 余弦退火, 让学习率平滑下降"""
     return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
 
 
